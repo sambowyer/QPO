@@ -14,7 +14,7 @@ logs/
 plots/
 
 # Checkpoints
-importance_networks/
+runs/
 
 # LaTeX
 tex_sources/
