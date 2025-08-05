@@ -209,8 +209,65 @@ def compute_Q_mc_loss(
     
     Q_logits = (1/algo_config["Q_beta"]) * (logps - ref_logps) + Q_A * ref_logps + Q_c
 
-    # Set up rewards tensor with masked locations
-    rewards = (torch.Tensor(batch["rewards"]).to(Q_logits.device) > 1).float()
+    # Handle split rewards if enabled
+    if algo_config.get("split_rewards", False):
+        # Extract format and correctness rewards from the batch
+        reward_metrics = batch.get("reward_metrics", {})
+        format_rewards = []
+        correctness_rewards = []
+        
+        # Get the list of reward dictionaries for each sample
+        if "format_reward" in reward_metrics:
+            format_rewards = reward_metrics["format_reward"]
+            # Handle different correctness reward names based on task
+            if "correctness_reward" in reward_metrics:
+                correctness_rewards = reward_metrics["correctness_reward"]
+            elif "gsm8k_correctness_reward" in reward_metrics:
+                correctness_rewards = reward_metrics["gsm8k_correctness_reward"]
+            else:
+                # Fallback: use total rewards minus format rewards
+                total_rewards = batch["rewards"]
+                correctness_rewards = [total - format for total, format in zip(total_rewards, format_rewards)]
+        else:
+            # Fallback if reward_metrics is not available
+            total_rewards = batch["rewards"]
+            format_rewards = [0.0] * len(total_rewards)
+            correctness_rewards = total_rewards
+        
+        # Convert to tensors
+        format_rewards = torch.tensor(format_rewards, dtype=torch.float, device=Q_logits.device)
+        correctness_rewards = torch.tensor(correctness_rewards, dtype=torch.float, device=Q_logits.device)
+        
+        # Compute format reward logits using the format_reward_pred layer
+        # Get penultimate layer activations (last hidden state before final layer norm)
+        with torch.no_grad():
+            outputs = policy_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+                return_dict=True,
+                use_cache=False,
+            )
+            # Use the last hidden state (penultimate layer activations)
+            penultimate_hidden = outputs.hidden_states[-1]  # [batch_size, seq_len, hidden_size]
+        
+        # Apply format reward prediction layer
+        format_reward_logits = policy_model.format_reward_pred(penultimate_hidden)  # [batch_size, seq_len, 1]
+        format_reward_logits = format_reward_logits.squeeze(-1)  # [batch_size, seq_len]
+        
+        # Shift to match the logps shape (remove last token)
+        format_reward_logits = format_reward_logits[..., :-1]  # [batch_size, seq_len-1]
+        
+        # Update Q_logits to only use correctness rewards
+        Q_logits = Q_logits - (1/algo_config["Q_beta"]) * algo_config.get("beta_format", 1.0) * format_reward_logits
+        
+        # Set up rewards for Q-loss (only correctness rewards)
+        rewards = (correctness_rewards > 0).float()
+    else:
+        # Original behavior - use total rewards
+        rewards = (torch.Tensor(batch["rewards"]).to(Q_logits.device) > 0).float()
+        format_reward_logits = None
+
     assert rewards.shape == (Q_logits.shape[0],)
 
     rewards = rewards[:,None].expand(-1, Q_logits.shape[1])
@@ -235,6 +292,27 @@ def compute_Q_mc_loss(
     # Sum the loss and divide by the number of valid (non-masked) tokens
     Q_loss = masked_bce_loss.sum() / (labels_mask.sum() + 1e-8)
 
+    # Compute format reward loss if split rewards is enabled
+    format_loss = None
+    if algo_config.get("split_rewards", False) and format_reward_logits is not None:
+        # Set up format rewards tensor
+        format_rewards_tensor = (format_rewards[:,None].expand(-1, format_reward_logits.shape[1]) > 0).float()
+        format_rewards_tensor = torch.where(labels_mask == 0, -100.0, format_rewards_tensor)
+        
+        # Compute format reward probabilities
+        format_reward_probs = torch.sigmoid(format_reward_logits)
+        
+        # Binary cross entropy loss for format rewards
+        format_bce_loss = -(format_rewards_tensor * torch.log(format_reward_probs + 1e-8) + 
+                           (1 - format_rewards_tensor) * torch.log(1 - format_reward_probs + 1e-8))
+        
+        # Apply mask and normalize
+        masked_format_loss = format_bce_loss * labels_mask
+        format_loss = masked_format_loss.sum() / (labels_mask.sum() + 1e-8)
+        
+        # Combine losses
+        Q_loss = Q_loss + algo_config.get("beta_format", 1.0) * format_loss
+
     # Compute metrics
     metrics = {
         "Q_loss": Q_loss.item(),
@@ -245,6 +323,12 @@ def compute_Q_mc_loss(
         metrics["Q_A"] = policy_model.Q_A.item()
     if hasattr(policy_model, 'Q_c') and isinstance(policy_model.Q_c, torch.nn.Parameter):
         metrics["Q_c"] = policy_model.Q_c.item()
+    
+    # Add format loss to metrics if split rewards is enabled
+    if format_loss is not None:
+        metrics["format_loss"] = format_loss.item()
+        metrics["format_reward_logits_mean"] = format_reward_logits.mean().item()
+        metrics["format_reward_logits_std"] = format_reward_logits.std().item()
     
     # Add logps and Q_logits statistics to metrics
     with torch.no_grad():

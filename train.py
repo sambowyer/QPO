@@ -214,6 +214,18 @@ def main():
         default=None,
         help="c for Q-learning (None to learn, otherwise use fixed value)",
     )
+    parser.add_argument(
+        "--split_rewards",
+        action="store_true",
+        default=False,
+        help="Split rewards into format and correctness components for QPO",
+    )
+    parser.add_argument(
+        "--beta_format",
+        type=float,
+        default=1.0,
+        help="Weight coefficient for format reward prediction",
+    )
     args = parser.parse_args()
 
     # Get dataset configuration
@@ -260,6 +272,8 @@ def main():
         "Q_beta": args.Q_beta,
         "Q_A": args.Q_A,
         "Q_c": args.Q_c,
+        "split_rewards": args.split_rewards,
+        "beta_format": args.beta_format,
     }
 
     # Needed to stop DeepSpeed from complaining
@@ -343,7 +357,8 @@ def main():
 
     # Format run name with algorithm variant
     if args.algo == "QPO":
-        RUN_NAME = f"{model_name_short}_QPO_beta{args.Q_beta}_train_{args.Q_train_method}_t{TEMPERATURE}_lr{LEARNING_RATE}_{dataset_config['short_name']}"
+        split_rewards_suffix = "_split_rewards" if args.split_rewards else ""
+        RUN_NAME = f"{model_name_short}_QPO_beta{args.Q_beta}_train_{args.Q_train_method}_t{TEMPERATURE}_lr{LEARNING_RATE}_{dataset_config['short_name']}{split_rewards_suffix}"
     elif args.algo == "optimal":
         RUN_NAME = f"{model_name_short}_optimal_g{GENERATIONS_PER_SAMPLE}_t{TEMPERATURE}_lr{LEARNING_RATE}_{dataset_config['short_name']}"
     else:
@@ -434,6 +449,13 @@ def main():
         else:
             policy_model.Q_c = torch.tensor(args.Q_c, dtype=torch.bfloat16, device=policy_model.device)
             print(f"Using fixed Q_c value: {policy_model.Q_c}")
+    
+    # Add format reward prediction layer for split rewards
+    if args.algo == "QPO" and args.split_rewards:
+        # Get the hidden size from the model's config
+        hidden_size = policy_model.config.hidden_size
+        policy_model.format_reward_pred = torch.nn.Linear(hidden_size, 1, dtype=torch.bfloat16, device=policy_model.device)
+        print(f"Initialized format reward prediction layer with hidden size: {hidden_size}")
 
     # Initialize DeepSpeed engines
     policy_model, *_ = deepspeed.initialize(
@@ -494,6 +516,8 @@ def main():
             "Q_c_learnable": args.Q_c is None,
             "Q_A_fixed": args.Q_A,
             "Q_c_fixed": args.Q_c,
+            "split_rewards": args.split_rewards,
+            "beta_format": args.beta_format,
         })
     
     wandb.init(
@@ -660,6 +684,10 @@ def main():
 
         # add rewards to model_inputs
         model_inputs["rewards"] = episodes_stats["rewards"]
+        
+        # Add reward_metrics for split rewards if enabled
+        if args.algo == "QPO" and args.split_rewards:
+            model_inputs["reward_metrics"] = episodes_stats.get("reward_metrics", {})
 
         # Calculate losses and update model
         policy_model.train()
@@ -676,9 +704,15 @@ def main():
             PER_DEVICE_BATCH_SIZE,
             desc="Gradient Accumulation",
         ):
-            batch = {
-                k: v[i : i + PER_DEVICE_BATCH_SIZE] for k, v in model_inputs.items()
-            }
+            batch = {}
+            for k, v in model_inputs.items():
+                if k == "reward_metrics" and isinstance(v, dict):
+                    # Handle reward_metrics dictionary specially
+                    batch[k] = {metric_name: metric_values[i:i + PER_DEVICE_BATCH_SIZE] 
+                               for metric_name, metric_values in v.items()}
+                else:
+                    # Handle regular lists/tensors
+                    batch[k] = v[i:i + PER_DEVICE_BATCH_SIZE]
 
             if args.algo == "QPO":
                 loss, loss_metrics = compute_Q_loss(
