@@ -205,7 +205,16 @@ def load_model_into_vllm(model: Union[DeepSpeedEngine, PreTrainedModel], llm: LL
         None
     """
     state_dict = model.module.state_dict() if isinstance(model, DeepSpeedEngine) else model.state_dict()
-    llm.llm_engine.model_executor.driver_worker.model_runner.model.load_weights(state_dict.items())
+    
+    # Filter out custom parameters that don't exist in vLLM model
+    filtered_state_dict = {}
+    for key, value in state_dict.items():
+        # Skip custom Q parameters that we added for QPO
+        if key in ['Q_A', 'Q_c']:
+            continue
+        filtered_state_dict[key] = value
+    
+    llm.llm_engine.model_executor.driver_worker.model_runner.model.load_weights(filtered_state_dict.items())
 
 
 def find_free_port():

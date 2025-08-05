@@ -197,7 +197,17 @@ def compute_Q_mc_loss(
     )  # [batch_size, seq_len-1]
 
     # Compute Q-function logits
-    Q_logits = (1/algo_config["Q_beta"]) * (logps - ref_logps) + algo_config["Q_A"] * ref_logps + algo_config["Q_c"]
+    # Use learned parameters from model if available, otherwise use algo_config values
+    Q_A = getattr(policy_model, 'Q_A', algo_config["Q_A"])
+    Q_c = getattr(policy_model, 'Q_c', algo_config["Q_c"])
+    
+    # Convert to tensor and move to correct device if needed
+    if not isinstance(Q_A, torch.Tensor):
+        Q_A = torch.tensor(Q_A, dtype=torch.bfloat16, device=logps.device)
+    if not isinstance(Q_c, torch.Tensor):
+        Q_c = torch.tensor(Q_c, dtype=torch.bfloat16, device=logps.device)
+    
+    Q_logits = (1/algo_config["Q_beta"]) * (logps - ref_logps) + Q_A * ref_logps + Q_c
 
     # Set up rewards tensor with masked locations
     rewards = (torch.Tensor(batch["rewards"]).to(Q_logits.device) > 1).float()
@@ -225,12 +235,27 @@ def compute_Q_mc_loss(
     # Sum the loss and divide by the number of valid (non-masked) tokens
     Q_loss = masked_bce_loss.sum() / (labels_mask.sum() + 1e-8)
 
-    # breakpoint()
-
     # Compute metrics
     metrics = {
         "Q_loss": Q_loss.item(),
     }
+    
+    # Add Q parameter values to metrics if they are learnable
+    if hasattr(policy_model, 'Q_A') and isinstance(policy_model.Q_A, torch.nn.Parameter):
+        metrics["Q_A"] = policy_model.Q_A.item()
+    if hasattr(policy_model, 'Q_c') and isinstance(policy_model.Q_c, torch.nn.Parameter):
+        metrics["Q_c"] = policy_model.Q_c.item()
+    
+    # Add logps and Q_logits statistics to metrics
+    with torch.no_grad():
+        metrics["policy_logps_mean"] = logps.mean().item()
+        metrics["policy_logps_std"] = logps.std().item()
+        metrics["ref_logps_mean"] = ref_logps.mean().item()
+        metrics["ref_logps_std"] = ref_logps.std().item()
+        metrics["Q_logits_mean"] = Q_logits.mean().item()
+        metrics["Q_logits_std"] = Q_logits.std().item()
+        metrics["logps_diff_mean"] = (logps - ref_logps).mean().item()
+        metrics["logps_diff_std"] = (logps - ref_logps).std().item()
 
     return Q_loss, metrics
 

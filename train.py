@@ -205,14 +205,14 @@ def main():
     parser.add_argument(
         "--Q_A",
         type=float,
-        default=1.0,
-        help="A for Q-learning",
+        default=None,
+        help="A for Q-learning (None to learn, otherwise use fixed value)",
     )
     parser.add_argument(
         "--Q_c",
         type=float,
-        default=0.0,
-        help="c for Q-learning",
+        default=None,
+        help="c for Q-learning (None to learn, otherwise use fixed value)",
     )
     args = parser.parse_args()
 
@@ -418,6 +418,23 @@ def main():
         gradient_checkpointing_kwargs={"use_reentrant": False}
     )
 
+    # Add learnable Q parameters for QPO algorithm
+    if args.algo == "QPO":
+        # Initialize learnable Q parameters if not provided via command line
+        if args.Q_A is None:
+            policy_model.Q_A = torch.nn.Parameter(torch.tensor(1.0, dtype=torch.bfloat16, device=policy_model.device))
+            print(f"Initialized learnable Q_A parameter: {policy_model.Q_A}")
+        else:
+            policy_model.Q_A = torch.tensor(args.Q_A, dtype=torch.bfloat16, device=policy_model.device)
+            print(f"Using fixed Q_A value: {policy_model.Q_A}")
+            
+        if args.Q_c is None:
+            policy_model.Q_c = torch.nn.Parameter(torch.tensor(0.0, dtype=torch.bfloat16, device=policy_model.device))
+            print(f"Initialized learnable Q_c parameter: {policy_model.Q_c}")
+        else:
+            policy_model.Q_c = torch.tensor(args.Q_c, dtype=torch.bfloat16, device=policy_model.device)
+            print(f"Using fixed Q_c value: {policy_model.Q_c}")
+
     # Initialize DeepSpeed engines
     policy_model, *_ = deepspeed.initialize(
         model=policy_model,
@@ -448,29 +465,42 @@ def main():
     )
 
     # Wandb for logging
+    wandb_config = {
+        "model_name": MODEL_NAME,
+        "learning_rate": LEARNING_RATE,
+        "num_iterations": NUM_ITERATIONS,
+        "episodes_per_iteration": EPISODES_PER_ITERATION,
+        "group_size": GENERATIONS_PER_SAMPLE,
+        "kl_coefficient": KL_COEFFICIENT,
+        "temperature": TEMPERATURE,
+        "algorithm": args.algo,
+        "algorithm_name": algo_name,
+        "eps_low": algo_config["eps_low"],
+        "eps_high": algo_config["eps_high"],
+        "norm_adv": algo_config["norm_adv"],
+        "length_norm": algo_config["length_norm"],
+        "token_budget": algo_config["token_budget"],
+        "max_tokens": args.max_tokens,
+        "dynamic_sampling": args.dyn_sample,
+        "dataset": args.dataset,
+    }
+    
+    # Add Q parameters to config if using QPO
+    if args.algo == "QPO":
+        wandb_config.update({
+            "Q_train_method": args.Q_train_method,
+            "Q_beta": args.Q_beta,
+            "Q_A_learnable": args.Q_A is None,
+            "Q_c_learnable": args.Q_c is None,
+            "Q_A_fixed": args.Q_A,
+            "Q_c_fixed": args.Q_c,
+        })
+    
     wandb.init(
         entity=WANDB_ENTITY,
         project=WANDB_PROJECT,
         name=RUN_NAME,
-        config={
-            "model_name": MODEL_NAME,
-            "learning_rate": LEARNING_RATE,
-            "num_iterations": NUM_ITERATIONS,
-            "episodes_per_iteration": EPISODES_PER_ITERATION,
-            "group_size": GENERATIONS_PER_SAMPLE,
-            "kl_coefficient": KL_COEFFICIENT,
-            "temperature": TEMPERATURE,
-            "algorithm": args.algo,
-            "algorithm_name": algo_name,
-            "eps_low": algo_config["eps_low"],
-            "eps_high": algo_config["eps_high"],
-            "norm_adv": algo_config["norm_adv"],
-            "length_norm": algo_config["length_norm"],
-            "token_budget": algo_config["token_budget"],
-            "max_tokens": args.max_tokens,
-            "dynamic_sampling": args.dyn_sample,
-            "dataset": args.dataset,
-        },
+        config=wandb_config,
     )
 
     # Load checkpoint if it exists
