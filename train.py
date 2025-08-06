@@ -357,7 +357,7 @@ def main():
 
     # Format run name with algorithm variant
     if args.algo == "QPO":
-        split_rewards_suffix = "_split_rewards" if args.split_rewards else ""
+        split_rewards_suffix = f"_split_rewards_betaf{args.beta_format}" if args.split_rewards else ""
         RUN_NAME = f"{model_name_short}_QPO_beta{args.Q_beta}_train_{args.Q_train_method}_t{TEMPERATURE}_lr{LEARNING_RATE}_{dataset_config['short_name']}{split_rewards_suffix}"
     elif args.algo == "optimal":
         RUN_NAME = f"{model_name_short}_optimal_g{GENERATIONS_PER_SAMPLE}_t{TEMPERATURE}_lr{LEARNING_RATE}_{dataset_config['short_name']}"
