@@ -17,6 +17,7 @@ def format_reward_func(completion: str, EOS_TOKEN: str, **kwargs) -> float:
     Args:
         completion (str): Generated output
         EOS_TOKEN (str): End of sequence token
+        **kwargs: Additional keyword arguments including optional 'check_eos' boolean
 
     Returns:
         float: Reward score
@@ -25,6 +26,11 @@ def format_reward_func(completion: str, EOS_TOKEN: str, **kwargs) -> float:
     allowed_pattern = r"^[\d+\-*/().\s]+$"
 
     try:
+        # Check if EOS token validation is required
+        check_eos = kwargs.get('check_eos', False)
+        if check_eos and not completion.endswith(EOS_TOKEN):
+            return 0.0
+
         # Synthetically prepend <think> (if your pipeline relies on that to ease matching)
         completion = "<think>" + completion
 
@@ -138,7 +144,8 @@ def compute_reward(
     completion: str,
     prompt: Dict[str, Any],
     task_name: str,
-    EOS_TOKEN: str
+    EOS_TOKEN: str,
+    check_eos: bool = False
 ) -> Tuple[float, Dict[str, float]]:
     """
     Compute the reward for a given completion.
@@ -148,6 +155,7 @@ def compute_reward(
         prompt (Dict[str, Any]): The prompt being evaluated
         task_name (str): The name of the task
         EOS_TOKEN (str): The end of sequence token
+        check_eos (bool): Whether to check for EOS token in format reward
 
     Returns:
         Tuple[float, Dict[str, float]]: A tuple containing the reward (float) and metrics (dict of partial-rewards)
@@ -157,7 +165,20 @@ def compute_reward(
     partial_rewards = {}
 
     for partial_reward_name in partial_reward_names:
-        partial_rewards[partial_reward_name] = PARTIAL_REWARD_NAME2FUNC[partial_reward_name](completion=completion, prompt=prompt, EOS_TOKEN=EOS_TOKEN)
+        if partial_reward_name == "format_reward":
+            partial_rewards[partial_reward_name] = PARTIAL_REWARD_NAME2FUNC[partial_reward_name](
+                completion=completion, 
+                prompt=prompt, 
+                EOS_TOKEN=EOS_TOKEN,
+                check_eos=check_eos
+            )
+        else:
+            partial_rewards[partial_reward_name] = PARTIAL_REWARD_NAME2FUNC[partial_reward_name](
+                completion=completion,
+                prompt=prompt,
+                EOS_TOKEN=EOS_TOKEN,
+                check_eos=check_eos
+            )
 
     # Compute the overall reward
     reward = sum(partial_rewards.values())

@@ -13,15 +13,19 @@ algos=("QPO")
 # datasets=("countdown" "gsm8k")
 datasets=("gsm8k")
 
-# Q_betas=(0.01 0.1 1.0)
-Q_betas=(0.01 0.1)
+# Q_betas=(0.1 1.0 10.0)
+# Q_betas=(0.01 0.1 1.0 10.0)
+Q_betas=(2.0)
+
 # lrs=(5e-7 1e-6 5e-6)
+# lrs=(5e-7 5e-6)
 lrs=(1e-6)
 
 # split_rewards=(True False)
-split_rewards=(True)
+split_rewards=(False)
 # beta_format=(0.01 0.1 1.0)
-beta_format=(1.0)
+# beta_format=(1.0 2.0 5.0 10.0)
+# beta_format=(20.0)
 
 
 for algo in ${algos[@]}; do
@@ -37,7 +41,7 @@ for algo in ${algos[@]}; do
                             done
                         else
                             lbatch -c $NUM_CPU -g $num_gpus --gputype $gpu_type -m $mem -t $TIME -a $code -q $partition -n $algo-$dataset-$lr-Qbeta$Q_beta --conda-env grpo \
-                                --cmd "python train.py --algo $algo --dataset $dataset --Q_beta $Q_beta --learning_rate $lr"
+                                --cmd "python train.py --algo $algo --dataset $dataset --Q_beta $Q_beta --learning_rate $lr --EOS_format_reward"
                         fi
                     done
                 done

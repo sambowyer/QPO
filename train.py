@@ -226,6 +226,12 @@ def main():
         default=1.0,
         help="Weight coefficient for format reward prediction",
     )
+    parser.add_argument(
+        "--EOS_format_reward",
+        action="store_true",
+        default=False,
+        help="Check for EOS token in format reward calculation",
+    )
     args = parser.parse_args()
 
     # Get dataset configuration
@@ -505,6 +511,7 @@ def main():
         "max_tokens": args.max_tokens,
         "dynamic_sampling": args.dyn_sample,
         "dataset": args.dataset,
+        "EOS_format_reward": args.EOS_format_reward,
     }
     
     # Add Q parameters to config if using QPO
@@ -564,7 +571,7 @@ def main():
                     stop_token_ids=[EOS_TOKEN_ID],
                 ),
                 reward_func=lambda completion, sample: compute_reward(
-                    completion, sample, task_name=args.dataset, EOS_TOKEN=EOS_TOKEN
+                    completion, sample, task_name=args.dataset, EOS_TOKEN=EOS_TOKEN, check_eos=args.EOS_format_reward
                 ),
             )
             eval_episode_table = dump_episodes(
@@ -635,6 +642,7 @@ def main():
             algo_config=algo_config,  # Pass the algorithm configuration
             token_budget=args.token_budget,  # Pass the token budget parameter
             task_name=args.dataset,
+            check_eos=args.EOS_format_reward,
         )
 
         # Safety check for empty batches (shouldn't happen with our fallback)
