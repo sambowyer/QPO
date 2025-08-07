@@ -232,6 +232,12 @@ def main():
         default=False,
         help="Check for EOS token in format reward calculation",
     )
+    parser.add_argument(
+        "--combine_rewards",
+        action="store_true",
+        default=False,
+        help="Combine rewards into binary (0 or 1) for non-QPO algorithms",
+    )
     args = parser.parse_args()
 
     # Get dataset configuration
@@ -369,6 +375,10 @@ def main():
         RUN_NAME = f"{model_name_short}_optimal_g{GENERATIONS_PER_SAMPLE}_t{TEMPERATURE}_lr{LEARNING_RATE}_{dataset_config['short_name']}"
     else:
         RUN_NAME = f"{model_name_short}_{args.algo}_el{args.eps_low}_eh{args.eps_high}_t{TEMPERATURE}_kl{KL_COEFFICIENT}_lr{LEARNING_RATE}_{dataset_config['short_name']}"
+    
+    # Add combined_rewards suffix if enabled
+    if args.combine_rewards:
+        RUN_NAME += "_combined_rewards"
 
     EXP_DIR = SCRATCH / "runs" / RUN_NAME
     EXP_DIR.mkdir(parents=True, exist_ok=True)
@@ -512,6 +522,7 @@ def main():
         "dynamic_sampling": args.dyn_sample,
         "dataset": args.dataset,
         "EOS_format_reward": args.EOS_format_reward,
+        "combine_rewards": args.combine_rewards,
     }
     
     # Add Q parameters to config if using QPO
@@ -571,7 +582,7 @@ def main():
                     stop_token_ids=[EOS_TOKEN_ID],
                 ),
                 reward_func=lambda completion, sample: compute_reward(
-                    completion, sample, task_name=args.dataset, EOS_TOKEN=EOS_TOKEN, check_eos=args.EOS_format_reward
+                    completion, sample, task_name=args.dataset, EOS_TOKEN=EOS_TOKEN, check_eos=args.EOS_format_reward, combine_rewards=args.combine_rewards, algo=args.algo
                 ),
             )
             eval_episode_table = dump_episodes(
@@ -643,6 +654,8 @@ def main():
             token_budget=args.token_budget,  # Pass the token budget parameter
             task_name=args.dataset,
             check_eos=args.EOS_format_reward,
+            combine_rewards=args.combine_rewards,
+            algo=args.algo,
         )
 
         # Safety check for empty batches (shouldn't happen with our fallback)

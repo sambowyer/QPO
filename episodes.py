@@ -25,6 +25,8 @@ def process_training_episodes(
     token_budget=1024,
     task_name: str = "gsm8k",
     check_eos: bool = False,
+    combine_rewards: bool = False,
+    algo: str = "QPO",
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     Process model generations and calculate rewards for training episodes.
@@ -121,7 +123,7 @@ def process_training_episodes(
 
         # Compute the rewards and metrics for each response
         rewards_and_metrics = [
-            compute_reward(resp, sample, task_name=task_name, EOS_TOKEN=EOS_TOKEN, check_eos=check_eos) for resp in responses
+            compute_reward(resp, sample, task_name=task_name, EOS_TOKEN=EOS_TOKEN, check_eos=check_eos, combine_rewards=combine_rewards, algo=algo) for resp in responses
         ]
         rewards, reward_metrics = zip(*rewards_and_metrics)
         rewards = np.array(rewards, dtype=np.float32)

@@ -145,7 +145,9 @@ def compute_reward(
     prompt: Dict[str, Any],
     task_name: str,
     EOS_TOKEN: str,
-    check_eos: bool = False
+    check_eos: bool = False,
+    combine_rewards: bool = False,
+    algo: str = "QPO"
 ) -> Tuple[float, Dict[str, float]]:
     """
     Compute the reward for a given completion.
@@ -156,6 +158,8 @@ def compute_reward(
         task_name (str): The name of the task
         EOS_TOKEN (str): The end of sequence token
         check_eos (bool): Whether to check for EOS token in format reward
+        combine_rewards (bool): Whether to combine rewards into binary (0 or 1) for non-QPO algorithms
+        algo (str): The algorithm being used
 
     Returns:
         Tuple[float, Dict[str, float]]: A tuple containing the reward (float) and metrics (dict of partial-rewards)
@@ -182,6 +186,14 @@ def compute_reward(
 
     # Compute the overall reward
     reward = sum(partial_rewards.values())
+
+    # Apply combine_rewards logic for non-QPO algorithms
+    if combine_rewards and algo != "QPO":
+        # Convert to binary: max reward (2) becomes 1, everything else becomes 0
+        reward = 1.0 if reward >= 2.0 else 0.0
+        # Also update partial rewards to be consistent
+        for key in partial_rewards:
+            partial_rewards[key] = 1.0 if partial_rewards[key] >= 1.0 else 0.0
 
     return reward, partial_rewards
 
