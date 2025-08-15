@@ -238,6 +238,12 @@ def main():
         default=False,
         help="Combine rewards into binary (0 or 1) for non-QPO algorithms",
     )
+    parser.add_argument(
+        "--use_value_heads",
+        action="store_true",
+        default=False,
+        help="Use value heads for QPO (single head if split_rewards=False, two heads if split_rewards=True)",
+    )
     args = parser.parse_args()
 
     # Get dataset configuration
@@ -286,6 +292,7 @@ def main():
         "Q_c": args.Q_c,
         "split_rewards": args.split_rewards,
         "beta_format": args.beta_format,
+        "use_value_heads": args.use_value_heads,
     }
 
     # Needed to stop DeepSpeed from complaining
@@ -370,7 +377,8 @@ def main():
     # Format run name with algorithm variant
     if args.algo == "QPO":
         split_rewards_suffix = f"_split_rewards_betaf{args.beta_format}" if args.split_rewards else ""
-        RUN_NAME = f"{model_name_short}_QPO_beta{args.Q_beta}_train_{args.Q_train_method}_t{TEMPERATURE}_lr{LEARNING_RATE}_{dataset_config['short_name']}{split_rewards_suffix}"
+        value_head_suffix = "_value_head" if args.use_value_heads else ""
+        RUN_NAME = f"{model_name_short}_QPO_beta{args.Q_beta}_train_{args.Q_train_method}_t{TEMPERATURE}_lr{LEARNING_RATE}_{dataset_config['short_name']}{split_rewards_suffix}{value_head_suffix}"
     elif args.algo == "optimal":
         RUN_NAME = f"{model_name_short}_optimal_g{GENERATIONS_PER_SAMPLE}_t{TEMPERATURE}_lr{LEARNING_RATE}_{dataset_config['short_name']}"
     else:
@@ -473,6 +481,21 @@ def main():
         policy_model.format_reward_pred = torch.nn.Linear(hidden_size, 1, dtype=torch.bfloat16, device=policy_model.device)
         print(f"Initialized format reward prediction layer with hidden size: {hidden_size}")
 
+    # Add value heads for QPO if enabled
+    if args.algo == "QPO" and args.use_value_heads:
+        # Get the hidden size from the model's config
+        hidden_size = policy_model.config.hidden_size
+        
+        if args.split_rewards:
+            # Two value heads for split rewards: correctness and format
+            policy_model.value_head_c = torch.nn.Linear(hidden_size, 1, dtype=torch.bfloat16, device=policy_model.device)
+            policy_model.value_head_f = torch.nn.Linear(hidden_size, 1, dtype=torch.bfloat16, device=policy_model.device)
+            print(f"Initialized two value heads (correctness and format) with hidden size: {hidden_size}")
+        else:
+            # Single value head for non-split rewards
+            policy_model.value_head = torch.nn.Linear(hidden_size, 1, dtype=torch.bfloat16, device=policy_model.device)
+            print(f"Initialized single value head with hidden size: {hidden_size}")
+
     # Initialize DeepSpeed engines
     policy_model, *_ = deepspeed.initialize(
         model=policy_model,
@@ -536,6 +559,7 @@ def main():
             "Q_c_fixed": args.Q_c,
             "split_rewards": args.split_rewards,
             "beta_format": args.beta_format,
+            "use_value_heads": args.use_value_heads,
         })
     
     wandb.init(
@@ -665,13 +689,6 @@ def main():
             )
             continue  # Skip to the next iteration of the main loop
 
-        for k, v in episodes_stats.items():
-            # Only include metric keys in metrics dictionary
-            if isinstance(v, list):
-                metrics.setdefault(k, []).extend(v)
-            elif k not in ["empty_batch"]:  # Skip internal flags
-                metrics[k] = v
-
         # Critical check: If we have no valid samples after dynamic sampling
         # This double-check is redundant with the above but kept for safety
         if episodes_stats.get("all_uniform", False):
@@ -681,13 +698,12 @@ def main():
             print("Skipping this batch and continuing to the next iteration.")
             continue  # Skip to the next iteration of the main loop
 
-        episode_table = dump_episodes(
-            episodes=episodes,
-            episodes_stats=episodes_stats,
-            exp_dir=EXP_DIR,
-            tokenizer=tokenizer,
-            iteration=iteration,
-        )
+        for k, v in episodes_stats.items():
+            # Only include metric keys in metrics dictionary
+            if isinstance(v, list):
+                metrics.setdefault(k, []).extend(v)
+            elif k not in ["empty_batch"]:  # Skip internal flags
+                metrics[k] = v
 
         #########################################################
         # Training
@@ -719,6 +735,14 @@ def main():
 
         train_time = time.time()
 
+        # Collect logits for QPO if needed
+        all_Q_logits = []
+        all_format_reward_logits = []
+        
+        # Set return_logits flag for QPO algorithm
+        if args.algo == "QPO":
+            algo_config["return_logits"] = True
+
         for i in trange(
             0,
             EPISODES_PER_ITERATION,
@@ -736,7 +760,7 @@ def main():
                     batch[k] = v[i:i + PER_DEVICE_BATCH_SIZE]
 
             if args.algo == "QPO":
-                loss, loss_metrics = compute_Q_loss(
+                loss, loss_metrics, Q_logits, format_reward_logits = compute_Q_loss(
                     policy_model=policy_model,
                     reference_model=reference_model,
                     batch=batch,
@@ -745,6 +769,11 @@ def main():
                     algo_config=algo_config,
                     loss_type=args.Q_train_method,
                 )
+                
+                # Collect logits for dumping
+                all_Q_logits.append(Q_logits.detach().cpu())
+                if format_reward_logits is not None:
+                    all_format_reward_logits.append(format_reward_logits.detach().cpu())
             else:
                 # Compute policy gradient loss
                 loss, loss_metrics = compute_pg_loss(
@@ -778,7 +807,33 @@ def main():
 
             policy_model.step()
 
+        # Concatenate collected logits
+        if args.algo == "QPO" and all_Q_logits:
+            all_Q_logits = torch.cat(all_Q_logits, dim=0)
+            if all_format_reward_logits:
+                all_format_reward_logits = torch.cat(all_format_reward_logits, dim=0)
+            else:
+                all_format_reward_logits = None
+        else:
+            all_Q_logits = None
+            all_format_reward_logits = None
+
+        # Reset return_logits flag
+        if args.algo == "QPO":
+            algo_config["return_logits"] = False
+
         print(f"Time taken to train: {time.time() - train_time} seconds")
+
+        # Dump episodes with logits for QPO training episodes
+        episode_table = dump_episodes(
+            episodes=episodes,
+            episodes_stats=episodes_stats,
+            exp_dir=EXP_DIR,
+            tokenizer=tokenizer,
+            iteration=iteration,
+            Q_logits=all_Q_logits,
+            format_reward_logits=all_format_reward_logits,
+        )
 
         #########################################################
         # Update inference engine weights

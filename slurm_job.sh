@@ -9,24 +9,27 @@ NUM_CPU=16
 TIME=48
 
 # algos=("QPO" "grpo" "dr_grpo" "dapo" "optimal")
-# algos=("QPO")
-algos=("grpo")
+algos=("QPO")
+# algos=("grpo")
 # datasets=("countdown" "gsm8k")
 datasets=("gsm8k")
 
-Q_betas=(0.1 1.0 10.0)
+# Q_betas=(0.1 1.0 10.0)
 # Q_betas=(0.01 0.1 1.0 10.0)
-# Q_betas=(2.0)
+Q_betas=(5.0 10.0)
 
 lrs=(5e-7 1e-6 5e-6)
 # lrs=(5e-7 5e-6)
 # lrs=(1e-6)
 
-# split_rewards=(True False)
-split_rewards=(False)
+split_rewards=(True False)
+# split_rewards=(False)
 # beta_format=(0.01 0.1 1.0)
 # beta_format=(1.0 2.0 5.0 10.0)
-# beta_format=(20.0)
+beta_format=(5.0 10.0)
+
+# use_value_heads=(True False)
+use_value_heads=(True)
 
 combine_rewards=True
 
@@ -36,16 +39,25 @@ for algo in ${algos[@]}; do
         for lr in ${lrs[@]}; do
             if [ $algo == "QPO" ]; then
                 for Q_beta in ${Q_betas[@]}; do
-                    for split_reward in ${split_rewards[@]}; do
-                        if [ $split_reward == "True" ]; then
-                            for beta_format in ${beta_format[@]}; do
-                                lbatch -c $NUM_CPU -g $num_gpus --gputype $gpu_type -m $mem -t $TIME -a $code -q $partition -n $algo-$dataset-$lr-Qbeta$Q_beta-split_reward-beta_f$beta_format-AC0 --conda-env grpo \
-                                    --cmd "python train.py --algo $algo --dataset $dataset --Q_beta $Q_beta --learning_rate $lr --split_rewards --beta_format $beta_format --Q_A 0.0 --Q_c 0.0"
-                            done
+                    for use_value_head in ${use_value_heads[@]}; do
+                        if [ $use_value_head == "True" ]; then
+                            use_value_head_str="--use_value_heads"
+                            value_head_str="_value_head"
                         else
-                            lbatch -c $NUM_CPU -g $num_gpus --gputype $gpu_type -m $mem -t $TIME -a $code -q $partition -n $algo-$dataset-$lr-Qbeta$Q_beta --conda-env grpo \
-                                --cmd "python train.py --algo $algo --dataset $dataset --Q_beta $Q_beta --learning_rate $lr --EOS_format_reward"
+                            use_value_head_str=""
+                            value_head_str=""
                         fi
+                        for split_reward in ${split_rewards[@]}; do
+                            if [ $split_reward == "True" ]; then
+                                for beta_format in ${beta_format[@]}; do
+                                    lbatch -c $NUM_CPU -g $num_gpus --gputype $gpu_type -m $mem -t $TIME -a $code -q $partition -n $algo-$dataset-$lr-Qbeta$Q_beta-split_reward-beta_f$beta_format-AC0$value_head_str --conda-env grpo \
+                                        --cmd "python train.py --algo $algo --dataset $dataset --Q_beta $Q_beta --learning_rate $lr --split_rewards --beta_format $beta_format --Q_A 0.0 --Q_c 0.0 $use_value_head_str"
+                                done
+                            else
+                                lbatch -c $NUM_CPU -g $num_gpus --gputype $gpu_type -m $mem -t $TIME -a $code -q $partition -n $algo-$dataset-$lr-Qbeta$Q_beta$value_head_str --conda-env grpo \
+                                    --cmd "python train.py --algo $algo --dataset $dataset --Q_beta $Q_beta --learning_rate $lr --EOS_format_reward $use_value_head_str"
+                            fi
+                        done
                     done
                 done
             else

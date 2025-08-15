@@ -215,6 +215,9 @@ def load_model_into_vllm(model: Union[DeepSpeedEngine, PreTrainedModel], llm: LL
         # Skip format reward prediction layer for split rewards
         if key.startswith('format_reward_pred'):
             continue
+        # Skip value heads for QPO
+        if key.startswith('value_head'):
+            continue
         filtered_state_dict[key] = value
     
     llm.llm_engine.model_executor.driver_worker.model_runner.model.load_weights(filtered_state_dict.items())

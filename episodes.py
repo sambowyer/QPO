@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 from pathlib import Path
 import json
 
@@ -303,6 +303,8 @@ def dump_episodes(
     tokenizer: AutoTokenizer,
     iteration: int,
     is_eval: bool = False,
+    Q_logits: Optional[torch.Tensor] = None,
+    format_reward_logits: Optional[torch.Tensor] = None,
 ) -> wandb.Table:
     """
     Dump episodes to a JSON file and create a wandb table.
@@ -314,6 +316,8 @@ def dump_episodes(
         tokenizer: Tokenizer for decoding token IDs
         iteration: Current training iteration
         is_eval: Whether the episodes are for evaluation
+        Q_logits: Optional tensor of Q logits for QPO training episodes
+        format_reward_logits: Optional tensor of format reward logits for QPO training episodes
 
     Returns:
         wandb.Table: Table containing query, response, reward, and response length
@@ -366,18 +370,30 @@ def dump_episodes(
     # Convert rewards to Python floats for JSON serialization
     python_rewards = [numpy_to_python(r) for r in rewards]
     
+    # Prepare episode data for JSON
+    episode_data = []
+    for i in range(len(query_texts)):
+        episode_entry = {
+            "query": query_texts[i],
+            "response": response_texts[i],
+            "reward": python_rewards[i],
+        }
+        
+        # Add Q logits and format reward logits for QPO training episodes
+        if not is_eval and Q_logits is not None:
+            # Get Q logits for this episode (all tokens except the last one)
+            episode_Q_logits = Q_logits[i].tolist() if i < Q_logits.shape[0] else []
+            episode_entry["Q_logits"] = episode_Q_logits
+            
+        if not is_eval and format_reward_logits is not None:
+            # Get format reward logits for this episode (all tokens except the last one)
+            episode_format_logits = format_reward_logits[i].tolist() if i < format_reward_logits.shape[0] else []
+            episode_entry["format_reward_logits"] = episode_format_logits
+            
+        episode_data.append(episode_entry)
+    
     with open(episodes_dir / f"eps_{iteration:06d}.json", "w") as f:
-        json.dump(
-            [
-                {
-                    "query": query_texts[i],
-                    "response": response_texts[i],
-                    "reward": python_rewards[i],
-                }
-                for i in range(len(query_texts))
-            ],
-            f,
-        )
+        json.dump(episode_data, f)
 
     # Create wandb table
     table = wandb.Table(columns=["query", "response", "reward", "response_length"])

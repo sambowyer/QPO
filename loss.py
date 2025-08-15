@@ -209,6 +209,20 @@ def compute_Q_mc_loss(
     
     Q_logits = (1/algo_config["Q_beta"]) * (logps - ref_logps) + Q_A * ref_logps + Q_c
 
+    # Get penultimate layer activations for value heads if enabled
+    penultimate_hidden = None
+    if algo_config.get("use_value_heads", False):
+        with torch.no_grad():
+            outputs = policy_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+                return_dict=True,
+                use_cache=False,
+            )
+            # Use the last hidden state (penultimate layer activations)
+            penultimate_hidden = outputs.hidden_states[-1]  # [batch_size, seq_len, hidden_size]
+
     # Handle split rewards if enabled
     if algo_config.get("split_rewards", False):
         # Extract format and correctness rewards from the batch
@@ -239,17 +253,18 @@ def compute_Q_mc_loss(
         correctness_rewards = torch.tensor(correctness_rewards, dtype=torch.float, device=Q_logits.device)
         
         # Compute format reward logits using the format_reward_pred layer
-        # Get penultimate layer activations (last hidden state before final layer norm)
-        with torch.no_grad():
-            outputs = policy_model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                output_hidden_states=True,
-                return_dict=True,
-                use_cache=False,
-            )
-            # Use the last hidden state (penultimate layer activations)
-            penultimate_hidden = outputs.hidden_states[-1]  # [batch_size, seq_len, hidden_size]
+        if penultimate_hidden is None:
+            # Get penultimate layer activations if not already obtained
+            with torch.no_grad():
+                outputs = policy_model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    output_hidden_states=True,
+                    return_dict=True,
+                    use_cache=False,
+                )
+                # Use the last hidden state (penultimate layer activations)
+                penultimate_hidden = outputs.hidden_states[-1]  # [batch_size, seq_len, hidden_size]
         
         # Apply format reward prediction layer
         format_reward_logits = policy_model.format_reward_pred(penultimate_hidden)  # [batch_size, seq_len, 1]
@@ -257,6 +272,20 @@ def compute_Q_mc_loss(
         
         # Shift to match the logps shape (remove last token)
         format_reward_logits = format_reward_logits[..., :-1]  # [batch_size, seq_len-1]
+        
+        # Add value head contributions if enabled
+        if algo_config.get("use_value_heads", False):
+            # Apply value head for format rewards
+            value_head_f_output = policy_model.value_head_f(penultimate_hidden)  # [batch_size, seq_len, 1]
+            value_head_f_output = value_head_f_output.squeeze(-1)  # [batch_size, seq_len]
+            value_head_f_output = value_head_f_output[..., :-1]  # [batch_size, seq_len-1]
+            format_reward_logits = format_reward_logits + value_head_f_output
+            
+            # Apply value head for correctness rewards (scaled by 1/Q_beta)
+            value_head_c_output = policy_model.value_head_c(penultimate_hidden)  # [batch_size, seq_len, 1]
+            value_head_c_output = value_head_c_output.squeeze(-1)  # [batch_size, seq_len]
+            value_head_c_output = value_head_c_output[..., :-1]  # [batch_size, seq_len-1]
+            Q_logits = Q_logits + (1/algo_config["Q_beta"]) * value_head_c_output
         
         # Update Q_logits to only use correctness rewards
         Q_logits = Q_logits - (1/algo_config["Q_beta"]) * algo_config.get("beta_format", 1.0) * format_reward_logits
@@ -267,6 +296,27 @@ def compute_Q_mc_loss(
         # Original behavior - use total rewards
         rewards = (torch.Tensor(batch["rewards"]).to(Q_logits.device) > 0).float()
         format_reward_logits = None
+        
+        # Add value head contribution if enabled (single head for non-split rewards)
+        if algo_config.get("use_value_heads", False):
+            if penultimate_hidden is None:
+                # Get penultimate layer activations if not already obtained
+                with torch.no_grad():
+                    outputs = policy_model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        output_hidden_states=True,
+                        return_dict=True,
+                        use_cache=False,
+                    )
+                    # Use the last hidden state (penultimate layer activations)
+                    penultimate_hidden = outputs.hidden_states[-1]  # [batch_size, seq_len, hidden_size]
+            
+            # Apply single value head (scaled by 1/Q_beta)
+            value_head_output = policy_model.value_head(penultimate_hidden)  # [batch_size, seq_len, 1]
+            value_head_output = value_head_output.squeeze(-1)  # [batch_size, seq_len]
+            value_head_output = value_head_output[..., :-1]  # [batch_size, seq_len-1]
+            Q_logits = Q_logits + (1/algo_config["Q_beta"]) * value_head_output
 
     assert rewards.shape == (Q_logits.shape[0],)
 
@@ -341,7 +391,11 @@ def compute_Q_mc_loss(
         metrics["logps_diff_mean"] = (logps - ref_logps).mean().item()
         metrics["logps_diff_std"] = (logps - ref_logps).std().item()
 
-    return Q_loss, metrics
+    # Return additional logits if requested
+    if algo_config.get("return_logits", False):
+        return Q_loss, metrics, Q_logits, format_reward_logits
+    else:
+        return Q_loss, metrics
 
 
 
