@@ -30,8 +30,13 @@ def generate(text_list, attention_list, latex_file, color='red', rescale_value =
 
 def rescale(input_list):
     the_array = np.asarray(input_list)
+    # Handle NaN and inf values
+    the_array = np.nan_to_num(the_array, nan=0.0, posinf=0.0, neginf=0.0)
     the_max = np.max(the_array)
     the_min = np.min(the_array)
+    if the_max == the_min:
+        # If all values are the same, return uniform values
+        return [50.0] * len(the_array)
     rescale = (the_array - the_min)/(the_max-the_min)*100
     return rescale.tolist()
 
