@@ -1,4 +1,4 @@
-# QPO
+# QPO: Q-function approximation via model logits
 
 ## Conda environment with environment.yml
 
