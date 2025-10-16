@@ -37,7 +37,7 @@ We then have multiple options for how to train $Q$ (which happens implicitly in 
 - **Q-learning (Offline Bootstrap):** $$Q*(a_t|s_t) = \max_a Q*(a|s(a_t, s_t))$$
 
 ## Non-binary rewards
-we can do some other stuff.
+We can do some other stuff later on for this case, but first we need to check that binary rewards work.
 
 
 
